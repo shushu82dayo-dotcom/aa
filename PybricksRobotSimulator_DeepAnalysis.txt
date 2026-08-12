@@ -1,0 +1,76 @@
+=========================================
+Unity Pybricks Simulator - 詳細解析・予測レポート
+=========================================
+ご提示いただいた膨大なチェックリストに対して、現在のプロジェクト内のスクリプト（AutomaticRobotBuilder.cs, MotorController.cs 等）および構成から読み取れる内容・予測される挙動をすべてまとめました。
+
+■ Unity環境
+- Unityバージョン: (ProjectVersion.txtが存在しないか標準的でないパスのため正確なバージョンは不明ですが、一般的に2021.3〜2022.3 LTSと推測されます)
+- Build Target: Windows/Mac/Linux Standalone (標準設定)
+- Render Pipeline: URP (UniversalRenderPipelineGlobalSettings.assetが存在するためURPを使用)
+
+■ Project Settings全般
+- Physics設定: Gravityは標準の Y = -9.81。Fixed Timestepはおそらくデフォルトの0.02s (50fps)
+- Player設定 / Input System設定: 新しいInput Systemが使用されている (InputSystem_Actions.inputactions が存在)
+
+■ Unity Scene (SampleScene)
+- Sceneファイル名: SampleScene.unity
+- 予測されるHierarchy (Play前):
+  - Robot (親オブジェクト)
+    - default (シャーシ等の本体メッシュ)
+    - LeftMotor (MotorControllerが付与された空オブジェクト、または車輪メッシュ)
+    - RightMotor
+    - DistanceSensor, ColorSensor, TouchSensor
+  - Ground (床オブジェクト)
+  - RobotRuntimeManager (自動化スクリプト群をまとめるManager)
+  - RobotSimulator (シミュレータ統括)
+
+■ Robot本体
+- Robot の全Component: Transform, Rigidbody (AutomaticRobotBuilder.cs のL39で取得しているため必須), AutomaticRobotBuilder
+- Rigidbodyの設定: 
+  - Use Gravity: True (床に接地するため)
+  - Is Kinematic: False (物理演算で動くため)
+- ArticulationBodyの有無: なし (現在の実装は通常のRigidbodyを使用しています)
+
+■ LeftMotor / RightMotor のInspector (予測)
+- 全Component名: Transform, MotorController, (おそらくMeshFilter/MeshRendererやColliderは子オブジェクトまたは自身に付与)
+- MotorControllerのInspector設定値:
+  - Wheel に何が割り当てられているか: 車輪のTransform (L16 public Transform wheel;)
+  - Rotation Axis: Vector3.right (L19) または環境に応じて設定
+  - Wheel Radius: 0.028f (2.8cm, 初期値 L22)
+  - Max Speed: 1000f deg/s (初期値 L9)
+  - Max Torque: 2.0f (初期値 L12)
+  - Friction: 1.5f (初期値 L26)
+
+■ Ground のInspector
+- Colliderの種類: BoxCollider または MeshCollider
+- Rigidbodyの有無: なし (静的オブジェクト)
+- Physic Material: 摩擦が設定されたマテリアル (車輪が滑らないようにするため)
+
+■ Playしたときの実際の挙動 (コードからの予測)
+- Robotが生成されるか: AutomaticRobotBuilder の buildOnStart = true により、Start() 時に車輪の自動検出が行われます。LDRモデルに基づく完全な自動生成はLdrParserを通じて行われる設計です。
+- Robotが落下するか: Rigidbodyがついており、Use Gravity = true のためGroundまで落下します。
+- Groundに接触するか: はい。Colliderがあれば接地します。
+- 車輪が回るか: MotorController.Run(速度) が呼ばれると、targetSpeed に向けて加速し、`wheel.Rotate()` (L215) により視覚的に回転します。
+- Robotが前進するか: 接地していれば前進します。MotorController.cs (L271) でスリップ率(slip)を計算し、`robotRigidbody.AddForceAtPosition()` (L302) により車体に対して前進方向の推力(摩擦力)を与えています。
+- 異常な飛び方・振動などがあるか: 現在の実装は物理的なWheelColliderやArticulationBodyのDriveを使わず、擬似的な AddForceAtPosition によるカスタム物理駆動です。摩擦係数(Friction)や質量(Mass)のバランスによっては、高速回転時に振動したり、スリップしすぎる可能性があります。
+
+■ Python実行状態
+- Pythonが起動するか: PythonRunner.csが非同期で python プロセス(または websocket)を立ち上げる設計です。(pybricks_api_test.log があるため、過去にテスト実行が行われています)
+- main.py が実行されるか: はい、RobotCode/main.robot または PythonRuntime/main.py がエントリポイントです。
+- motor.run(500) がUnityまで届いているか: Python側で `PBX:MOTOR_RUN` などの文字列/JSONを stdout に出力し、Unity (PythonRunner) がそれをパースして RobotAPI 経由で MotorController.Run() を呼び出す仕組みです。
+
+■ 現在のC#側ファイルの実装と役割
+- **AutomaticRobotBuilder.cs**:
+  起動時に自身のRigidbodyを取得し、子階層から名前に「wheel」や「タイヤ」を含むオブジェクト、またはBounding Boxの縦横比が円盤に近いオブジェクト（比率0.9以上）を「車輪」として自動検出します。
+- **MotorController.cs**:
+  PybricksのモーターAPIをエミュレートします。Run, Stop, Brake, Hold メソッドを持ちます。FixedUpdate内で現在の速度(currentSpeed)を目標速度(targetSpeed)に近づけ、車輪メッシュを回転させます。さらに、車輪の周速と車体の前進速度の差（スリップ）から摩擦力を計算し、AddForceAtPositionで車体を押します。WheelColliderを使用しない独自のアーキテクチャです。
+- **RobotAPI.cs / PythonRunner.cs**:
+  外部のPythonプロセスと通信し、コマンド（Run, Stop等）をMotorControllerに伝達するブリッジ役を果たします。
+
+■ LDR / OBJ 解析
+- **本体！_Copy.ldr / obj**:
+  RobotSimulator フォルダ内に配置されています。LDRParser.csによってこれらのファイルを解析し、Unity上にパーツごとのGameObjectを動的に構築する仕組みが含まれていると推測されます。
+
+■ 最終目標と設計の変遷
+- **過去の設計変更**: おそらく最初は標準の WheelCollider を使用しようとしたか、ArticulationBody による関節駆動を検討していましたが、Pybricksの「速度指定」かつ「角度取得」が可能なモーター制御を完璧に再現するため、あえて Rigidbody + AddForce によるカスタム物理モデル（MotorController.cs）を採用したと考えられます。
+- **最終目標**: 実機のPybricksコード（Python）を一切変更せずに、Unity上のシミュレーターで走らせ、WROなどの競技コース上で実機と極めて近い動き（摩擦、速度、ジャイロの挙動など）を再現することです。
